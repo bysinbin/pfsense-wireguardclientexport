@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE packagegui SYSTEM "../schema/packages.dtd">
+<?xml-stylesheet type="text/xsl" href="../xsl/package.xsl"?>
+<packagegui>
+	<copyright>
+	<![CDATA[
+/*
+ * wgclientexport.xml
+ *
+ * WireGuard Quick Peer & Client Export for pfSense
+ * Developed for easy peer creation, ready config and QR code export.
+ */
+	]]>
+	</copyright>
+	<name>wgclientexport</name>
+	<version>1.0.0</version>
+	<title>VPN: WireGuard Hızlı Yönetici</title>
+	<donotsave>true</donotsave>
+	<include_file>/usr/local/pkg/wgclientexport.inc</include_file>
+	<menu>
+		<name>WireGuard Hızlı Peer</name>
+		<section>VPN</section>
+		<configfile>wgclientexport.xml</configfile>
+		<url>/wg_quick_peer.php</url>
+	</menu>
+	<tabs>
+		<tab>
+			<text>Hızlı Peer &amp; Yönetim</text>
+			<url>/wg_quick_peer.php</url>
+			<active/>
+		</tab>
+		<tab>
+			<text>Tüneller (pfSense)</text>
+			<url>/wg/vpn_wg_tunnels.php</url>
+		</tab>
+		<tab>
+			<text>Peer'lar (pfSense)</text>
+			<url>/wg/vpn_wg_peers.php</url>
+		</tab>
+		<tab>
+			<text>Durum</text>
+			<url>/wg/status_wireguard.php</url>
+		</tab>
+	</tabs>
+</packagegui>
