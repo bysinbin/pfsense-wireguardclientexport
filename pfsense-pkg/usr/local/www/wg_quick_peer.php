@@ -74,6 +74,24 @@ if (isset($_POST['ajax_save_privkey'])) {
     exit;
 }
 
+// 5b. AJAX Save AD User Mapping for a peer
+if (isset($_POST['ajax_save_peer_ad'])) {
+    session_write_close();
+    header('Content-Type: application/json; charset=utf-8');
+    $pub = trim($_POST['pubkey'] ?? '');
+    $ad_user = trim($_POST['ad_username'] ?? '');
+    if (!empty($pub)) {
+        wg_quick_save_peer_meta($pub, ['ad_username' => $ad_user]);
+        if (wg_quick_is_ad_sso_available()) {
+            wg_quick_sync_ad_sessions();
+        }
+        echo json_encode(['success' => true]);
+    } else {
+        echo json_encode(['success' => false, 'error' => 'Geçersiz peer.']);
+    }
+    exit;
+}
+
 // 6. AJAX Get Existing Peer Config
 if (isset($_GET['ajax_get_config'])) {
     session_write_close();
@@ -81,6 +99,7 @@ if (isset($_GET['ajax_get_config'])) {
     $tun = trim($_GET['tun'] ?? 'tun_wg0');
     $client_ip = trim($_GET['ip'] ?? '');
     $client_privkey = trim($_GET['privkey'] ?? '');
+    $pubkey = trim($_GET['pubkey'] ?? '');
     $descr = trim($_GET['descr'] ?? 'wireguard-client');
     $dns = trim($_GET['dns'] ?? '');
     $allowed_ips = trim($_GET['allowed_ips'] ?? '');
@@ -93,18 +112,40 @@ if (isset($_GET['ajax_get_config'])) {
         $used_priv = trim($m[1]);
     }
 
+    $peers_meta = wg_quick_get_peers_meta();
+    $peer_ad = $peers_meta[$pubkey]['ad_username'] ?? '';
+
     echo json_encode([
         'success' => true,
         'config' => $conf,
         'descr' => $descr,
         'client_ip' => $client_ip,
         'client_privkey' => $used_priv,
+        'ad_username' => $peer_ad,
+        'pubkey' => $pubkey,
         'tun' => $tun
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// 7. Direct Download .conf
+// 7. AJAX Active Directory Users
+if (isset($_GET['ajax_ad_users'])) {
+    session_write_close();
+    header('Content-Type: application/json; charset=utf-8');
+    $refresh = !empty($_GET['refresh']);
+    echo json_encode(wg_quick_get_ad_users($refresh), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// 8. AJAX Sync Active Sessions to Posea AD SSO & PoseaFilter
+if (isset($_POST['ajax_sync_ad_sessions']) || isset($_GET['ajax_sync_ad_sessions'])) {
+    session_write_close();
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(wg_quick_sync_ad_sessions(), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// 9. Direct Download .conf
 if (isset($_GET['download_conf'])) {
     $tun = trim($_GET['tun'] ?? 'tun_wg0');
     $client_ip = trim($_GET['ip'] ?? '10.0.0.2');
@@ -201,6 +242,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // Read status
 $wg_data = wg_quick_get_status();
+$ad_sso = $wg_data['ad_sso'] ?? wg_quick_get_ad_sso_status();
+$ad_users = ($ad_sso['available'] && $ad_sso['enabled']) ? wg_quick_get_ad_users() : [];
 $has_tunnels = !empty($wg_data['tunnels']);
 $active_tunnel_name = $_GET['tun'] ?? array_key_first($wg_data['tunnels']) ?? 'tun_wg0';
 $current_tunnel = $wg_data['tunnels'][$active_tunnel_name] ?? null;
@@ -435,6 +478,27 @@ function format_handshake_human($timestamp) {
 
         <?php else: ?>
 
+            <?php if (!empty($ad_sso['available']) && !empty($ad_sso['enabled'])): ?>
+                <!-- POSEA AD SSO & 5651 DURUM BARI -->
+                <div class="row" style="margin-bottom:15px;">
+                    <div class="col-md-12">
+                        <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(56, 189, 248, 0.08); border:1px solid rgba(56, 189, 248, 0.25); border-radius:8px; padding:10px 16px; flex-wrap:wrap; gap:10px;">
+                            <div style="display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+                                <i class="fa fa-windows" style="color:#38bdf8; font-size:18px;"></i>
+                                <strong style="color:#38bdf8;">Posea AD SSO Entegrasyonu Aktif:</strong>
+                                <span class="label label-primary" style="font-size:12px;"><?= htmlspecialchars($ad_sso['domain_name']) ?></span>
+                                <span class="text-muted" style="font-size:12px;">(DC: <?= htmlspecialchars($ad_sso['dc_host']) ?>) &bull; <?= count($ad_users) ?> AD Kullanıcısı &bull; PoseaFilter UTM &amp; 5651 Log Senkron</span>
+                            </div>
+                            <div>
+                                <button type="button" class="btn btn-xs btn-info" id="btnSyncAd" style="background:rgba(56, 189, 248, 0.2); border:1px solid #38bdf8; color:#38bdf8; font-weight:bold; padding:4px 10px;" onclick="syncAdSessions(this)">
+                                    <i class="fa fa-refresh"></i> <span>AD &amp; 5651 Senkronize Et</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
+
             <!-- AKTİF TÜNEL BİLGİ KARTLARI -->
             <div class="row" style="margin-bottom:15px;">
                 <div class="col-md-12">
@@ -519,6 +583,40 @@ function format_handshake_human($timestamp) {
                     <form id="addPeerForm" method="post" action="wg_quick_peer.php?tun=<?= urlencode($active_tunnel_name) ?>">
                         <input type="hidden" name="act" value="add_peer">
                         <input type="hidden" name="tun" value="<?= htmlspecialchars($active_tunnel_name) ?>">
+
+                        <?php if (!empty($ad_sso['available']) && !empty($ad_sso['enabled'])): ?>
+                            <!-- AD Kullanıcısı Seçim Alanı -->
+                            <div class="row" style="margin-bottom:12px;">
+                                <div class="col-md-12">
+                                    <div style="background:rgba(56, 189, 248, 0.05); border:1px solid rgba(56, 189, 248, 0.25); border-radius:6px; padding:10px 14px;">
+                                        <label for="ad_user_select" style="font-weight:bold; color:#38bdf8; margin-bottom:5px;">
+                                            <i class="fa fa-windows"></i> Active Directory Kullanıcısı Seç (SSO / 5651 Entegrasyonu):
+                                        </label>
+                                        <div class="input-group">
+                                            <span class="input-group-addon" style="background:rgba(0,0,0,0.25); border-color:rgba(56,189,248,0.3); color:#38bdf8;">
+                                                <i class="fa fa-user"></i>
+                                            </span>
+                                            <select id="ad_user_select" class="form-control input-md" onchange="onAdUserSelected(this)" style="font-weight:bold;">
+                                                <option value="">-- Serbest Cihaz / AD Eşlemesi Yok (Manuel İsim Girin) --</option>
+                                                <?php foreach ($ad_users as $u): ?>
+                                                    <option value="<?= htmlspecialchars($u['username']) ?>"
+                                                            data-display="<?= htmlspecialchars($u['display_name']) ?>"
+                                                            data-dept="<?= htmlspecialchars($u['department']) ?>"
+                                                            data-disabled="<?= $u['disabled'] ? '1' : '0' ?>"
+                                                            <?= $u['disabled'] ? 'style="color:#f87171;"' : '' ?>>
+                                                        <?= htmlspecialchars($u['display_name']) ?> (<?= htmlspecialchars($u['username']) ?>) <?= !empty($u['department']) ? ' &bull; ' . htmlspecialchars($u['department']) : '' ?><?= $u['disabled'] ? ' [AD PASİF]' : '' ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                        </div>
+                                        <input type="hidden" name="ad_username" id="ad_username" value="">
+                                        <p class="help-block text-muted" style="margin-top:4px; margin-bottom:0; font-size:11px;">
+                                            Kullanıcı seçildiğinde profil adı otomatik dolar ve anahtarlar hazırlanır. Bağlandığında oturum PoseaFilter UTM ve 5651 loglarına AD kimliğiyle işlenir.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        <?php endif; ?>
 
                         <div class="row">
                             <!-- Peer Adı -->
@@ -676,6 +774,17 @@ function format_handshake_human($timestamp) {
                                         </td>
                                         <td style="vertical-align:middle; font-weight:bold;">
                                             <?= htmlspecialchars($p['descr'] ?: 'İsimsiz Peer') ?>
+                                            <?php if (!empty($p['ad_username'])): ?>
+                                                <br>
+                                                <span class="badge" style="background:rgba(56,189,248,0.15); color:#38bdf8; border:1px solid rgba(56,189,248,0.35); font-size:10px; font-weight:normal; margin-top:3px; display:inline-block;">
+                                                    <i class="fa fa-windows"></i> <?= htmlspecialchars($p['ad_username']) ?>
+                                                </span>
+                                                <?php if (!empty($p['ad_info']['disabled'])): ?>
+                                                    <span class="badge badge-danger" style="background-color:#ef4444; color:#fff; font-size:10px; margin-top:3px; display:inline-block;" title="Active Directory'de bu kullanıcı hesabı devre dışı bırakılmıştır!">
+                                                        <i class="fa fa-ban"></i> AD Pasif
+                                                    </span>
+                                                <?php endif; ?>
+                                            <?php endif; ?>
                                         </td>
                                         <td style="vertical-align:middle;">
                                             <span class="label label-primary" style="font-size:12px; font-family:monospace; padding:4px 8px;">
@@ -698,6 +807,11 @@ function format_handshake_human($timestamp) {
                                             <span class="text-info">&uarr; <?= format_bytes_human($p['transfer_tx']) ?></span>
                                         </td>
                                         <td style="text-align:right; vertical-align:middle;">
+                                            <?php if (!empty($p['ad_info']['disabled']) && $p['enabled']): ?>
+                                                <button type="button" class="btn btn-xs btn-warning" title="Kullanıcının AD hesabı kapalı! VPN bağlantısını devre dışı bırakmak için tıklayın" onclick="togglePeer(<?= $p['idx'] ?>)" style="margin-right:3px;">
+                                                    <i class="fa fa-lock"></i> Pasife Al
+                                                </button>
+                                            <?php endif; ?>
                                             <button type="button" class="btn btn-xs btn-info" title="Config ve QR Kod Görüntüle" onclick="showExistingPeerModal('<?= htmlspecialchars($active_tunnel_name) ?>', '<?= htmlspecialchars($p['first_ip'] ?: '10.0.0.2') ?>', '<?= htmlspecialchars($p['descr']) ?>', '<?= htmlspecialchars($p['publickey']) ?>', '<?= htmlspecialchars($p['privatekey']) ?>')">
                                                 <i class="fa fa-qrcode"></i> Config &amp; QR
                                             </button>
@@ -761,6 +875,30 @@ function format_handshake_human($timestamp) {
                                 </span>
                             </div>
                         </div>
+
+                        <?php if (!empty($ad_sso['available']) && !empty($ad_sso['enabled'])): ?>
+                            <!-- Active Directory Kullanıcı Eşleme Kutusu -->
+                            <div style="margin-top:10px; background:rgba(0,0,0,0.3); padding:10px; border-radius:6px; border:1px solid rgba(255,255,255,0.1);">
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px;">
+                                    <i class="fa fa-windows text-info"></i> Active Directory Kullanıcı Eşlemesi (SSO / 5651):
+                                </label>
+                                <div class="input-group">
+                                    <select id="modalAdUserSelect" class="form-control input-sm" style="font-weight:bold;">
+                                        <option value="">-- Serbest Cihaz / AD Eşlemesi Yok --</option>
+                                        <?php foreach ($ad_users as $u): ?>
+                                            <option value="<?= htmlspecialchars($u['username']) ?>">
+                                                <?= htmlspecialchars($u['display_name']) ?> (<?= htmlspecialchars($u['username']) ?>)
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <span class="input-group-btn">
+                                        <button type="button" class="btn btn-sm btn-info" onclick="saveModalAdUser()">
+                                            <i class="fa fa-save"></i> Kaydet
+                                        </button>
+                                    </span>
+                                </div>
+                            </div>
+                        <?php endif; ?>
                     </div>
 
                     <!-- QR Kodu & Mobil Bilgi -->
@@ -938,7 +1076,7 @@ function renderQRCode(text) {
     }
 }
 
-function openConfigModal(title, configText, name, pubkey, privkey, tun, ip) {
+function openConfigModal(title, configText, name, pubkey, privkey, tun, ip, adUser) {
     currentExportConfig = configText;
     currentExportName = name;
     currentModalPubkey = pubkey || "";
@@ -948,6 +1086,11 @@ function openConfigModal(title, configText, name, pubkey, privkey, tun, ip) {
     document.getElementById("modalPeerTitle").innerText = title;
     document.getElementById("modalConfigContent").innerText = configText;
     document.getElementById("modalPrivKeyInput").value = privkey || "";
+
+    var adSel = document.getElementById("modalAdUserSelect");
+    if (adSel) {
+        adSel.value = adUser || "";
+    }
 
     renderQRCode(configText);
     $('#configExportModal').modal('show');
@@ -978,6 +1121,89 @@ function saveModalPrivateKey() {
             alert("Anahtar kaydedilemedi: " + (data.error || "Bilinmeyen hata"));
         }
     });
+}
+
+function saveModalAdUser() {
+    var adSel = document.getElementById("modalAdUserSelect");
+    if (!adSel || !currentModalPubkey) return;
+
+    var newAdUser = adSel.value;
+    var formData = new FormData();
+    formData.append('ajax_save_peer_ad', '1');
+    formData.append('pubkey', currentModalPubkey);
+    formData.append('ad_username', newAdUser);
+
+    fetch('wg_quick_peer.php', { method: 'POST', body: formData })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+            if (data && data.success) {
+                alert("Active Directory kullanıcı eşlemesi başarıyla kaydedildi!");
+                location.reload();
+            } else {
+                alert("Hata: " + ((data && data.error) ? data.error : "Eşleme kaydedilemedi."));
+            }
+        })
+        .catch(function() {
+            alert("Sunucu ile iletişim hatası.");
+        });
+}
+
+function onAdUserSelected(sel) {
+    var val = sel.value;
+    var adInput = document.getElementById('ad_username');
+    if (adInput) adInput.value = val;
+
+    if (val) {
+        var opt = sel.options[sel.selectedIndex];
+        var disp = opt.getAttribute('data-display') || val;
+        var dept = opt.getAttribute('data-dept') || '';
+        var isDisabled = opt.getAttribute('data-disabled') === '1';
+
+        var nameText = disp;
+        if (disp.toLowerCase() !== val.toLowerCase()) {
+            nameText += ' (' + val + ')';
+        }
+        var descrInput = document.getElementById('peer_descr');
+        if (descrInput) descrInput.value = nameText;
+
+        if (isDisabled) {
+            alert('DİKKAT: Seçilen kullanıcının (' + val + ') Active Directory hesabı PASİF / KAPALIDIR!');
+        }
+
+        var privInput = document.getElementById('client_privkey');
+        if (privInput && !privInput.value) {
+            generateKeypair();
+        }
+    }
+}
+
+function syncAdSessions(btn) {
+    var origHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Senkronize ediliyor...';
+    }
+
+    fetch('wg_quick_peer.php?ajax_sync_ad_sessions=1', { method: 'POST' })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+            }
+            if (data && data.success) {
+                alert('Senkronizasyon Başarılı!\n' + (data.synced_count || 0) + ' aktif WireGuard VPN oturumu Posea AD SSO ve PoseaFilter UTM sistemine aktarıldı.');
+            } else {
+                alert('Hata: ' + ((data && data.error) ? data.error : 'Senkronizasyon başarısız oldu.'));
+            }
+        })
+        .catch(function() {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+            }
+            alert('Sunucu ile iletişim kurulurken hata oluştu.');
+        });
 }
 
 function onPrivateKeyInput(privVal) {
@@ -1022,11 +1248,11 @@ function refreshNextIp(tunName) {
 }
 
 function showExistingPeerModal(tunName, clientIp, descr, pubkey, privkey) {
-    fetch('wg_quick_peer.php?ajax_get_config=1&tun=' + encodeURIComponent(tunName) + '&ip=' + encodeURIComponent(clientIp) + '&descr=' + encodeURIComponent(descr) + '&privkey=' + encodeURIComponent(privkey || ''))
+    fetch('wg_quick_peer.php?ajax_get_config=1&tun=' + encodeURIComponent(tunName) + '&ip=' + encodeURIComponent(clientIp) + '&descr=' + encodeURIComponent(descr) + '&pubkey=' + encodeURIComponent(pubkey || '') + '&privkey=' + encodeURIComponent(privkey || ''))
         .then(function(res) { return res.json(); })
         .then(function(data) {
             if (data.success && data.config) {
-                openConfigModal(descr + " (" + clientIp + ")", data.config, descr, pubkey, data.client_privkey || privkey, tunName, clientIp);
+                openConfigModal(descr + " (" + clientIp + ")", data.config, descr, pubkey, data.client_privkey || privkey, tunName, clientIp, data.ad_username || '');
             }
         });
 }

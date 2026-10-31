@@ -22,6 +22,7 @@ if (file_exists("/usr/local/pkg/wireguard/includes/wg.inc")) {
 }
 
 const WG_KEY_VAULT_FILE = '/var/etc/wgclientexport_keys.json';
+const WG_PEER_META_FILE = '/var/etc/wgclientexport_peers.json';
 
 /**
  * Check if the official WireGuard package is installed on pfSense
@@ -92,6 +93,247 @@ function wg_quick_get_peer_private_key($pubkey) {
     }
 
     return '';
+}
+
+/**
+ * Read the peer metadata store (associated AD username, etc.)
+ */
+function wg_quick_get_peers_meta() {
+    $meta = [];
+    if (file_exists(WG_PEER_META_FILE)) {
+        $data = @json_decode(file_get_contents(WG_PEER_META_FILE), true);
+        if (is_array($data)) {
+            $meta = $data;
+        }
+    }
+
+    $xml_meta = config_get_path('installedpackages/wgclientexport/peers_meta') ?? [];
+    if (is_array($xml_meta)) {
+        foreach ($xml_meta as $pub => $info) {
+            if (!empty($pub) && !isset($meta[$pub])) {
+                $meta[$pub] = $info;
+            }
+        }
+    }
+
+    return $meta;
+}
+
+/**
+ * Save metadata for a peer (such as ad_username)
+ */
+function wg_quick_save_peer_meta($pubkey, $meta_data) {
+    if (empty($pubkey) || !is_array($meta_data)) {
+        return;
+    }
+
+    $meta = wg_quick_get_peers_meta();
+    $meta[$pubkey] = array_merge($meta[$pubkey] ?? [], $meta_data);
+
+    @mkdir(dirname(WG_PEER_META_FILE), 0755, true);
+    @file_put_contents(WG_PEER_META_FILE, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+    $xml_meta = config_get_path('installedpackages/wgclientexport/peers_meta') ?? [];
+    $xml_meta[$pubkey] = $meta[$pubkey];
+    config_set_path('installedpackages/wgclientexport/peers_meta', $xml_meta);
+}
+
+/**
+ * Check if Posea AD SSO package is installed on pfSense
+ */
+function wg_quick_is_ad_sso_available() {
+    return file_exists('/usr/local/pkg/posea_ad_sso.inc');
+}
+
+/**
+ * Get Posea AD SSO status and configuration details
+ */
+function wg_quick_get_ad_sso_status() {
+    if (!wg_quick_is_ad_sso_available()) {
+        return [
+            'available' => false,
+            'enabled' => false,
+            'reason' => 'posea_ad_sso paketi yüklü değil'
+        ];
+    }
+
+    require_once('/usr/local/pkg/posea_ad_sso.inc');
+    $cfg = posea_sso_get_config();
+    $enabled = !empty($cfg['enabled']);
+    $running = function_exists('posea_ad_sso_is_running') ? posea_ad_sso_is_running() : true;
+
+    return [
+        'available' => true,
+        'enabled' => $enabled,
+        'running' => $running,
+        'domain_name' => $cfg['domain_name'] ?? '',
+        'dc_host' => $cfg['dc_host'] ?? '',
+        'dc_port' => intval($cfg['dc_port'] ?? 389),
+        'base_dn' => $cfg['base_dn'] ?? '',
+        'bind_user' => $cfg['bind_user'] ?? ''
+    ];
+}
+
+/**
+ * Fetch users from Active Directory LDAP with caching (TTL 300s)
+ */
+function wg_quick_get_ad_users($force_refresh = false) {
+    if (!wg_quick_is_ad_sso_available()) {
+        return [];
+    }
+
+    require_once('/usr/local/pkg/posea_ad_sso.inc');
+    $cache_file = '/var/run/wg_ad_users_cache.json';
+
+    if (!$force_refresh && file_exists($cache_file) && (time() - filemtime($cache_file) < 300)) {
+        $cached = @json_decode(file_get_contents($cache_file), true);
+        if (is_array($cached) && !empty($cached)) {
+            return $cached;
+        }
+    }
+
+    $cfg = posea_sso_get_config();
+    $conn = posea_sso_ldap_connect($cfg);
+    if (!$conn || !posea_sso_ldap_bind($conn, $cfg['bind_user'], $cfg['bind_password'])) {
+        return [];
+    }
+
+    $filter = "(&(objectCategory=person)(objectClass=user))";
+    $attrs = ["sAMAccountName", "displayName", "mail", "department", "userAccountControl", "memberOf"];
+    $sr = @ldap_search($conn, $cfg['base_dn'], $filter, $attrs, 0, 500);
+    if (!$sr) {
+        return [];
+    }
+
+    $entries = @ldap_get_entries($conn, $sr);
+    $users = [];
+    for ($i = 0; $i < ($entries['count'] ?? 0); $i++) {
+        $u = $entries[$i];
+        $username = $u['samaccountname'][0] ?? '';
+        if (empty($username)) continue;
+
+        $uac = intval($u['useraccountcontrol'][0] ?? 0);
+        $is_disabled = (($uac & 2) === 2);
+
+        $groups = [];
+        if (isset($u['memberof'])) {
+            for ($g = 0; $g < $u['memberof']['count']; $g++) {
+                if (preg_match('/^CN=([^,]+)/i', $u['memberof'][$g], $gm)) {
+                    $groups[] = $gm[1];
+                }
+            }
+        }
+
+        $users[] = [
+            'username' => $username,
+            'display_name' => $u['displayname'][0] ?? $username,
+            'mail' => $u['mail'][0] ?? '',
+            'department' => $u['department'][0] ?? '',
+            'groups' => $groups,
+            'disabled' => $is_disabled
+        ];
+    }
+
+    usort($users, function($a, $b) {
+        return strcasecmp($a['display_name'], $b['display_name']);
+    });
+
+    @file_put_contents($cache_file, json_encode($users, JSON_UNESCAPED_UNICODE));
+    return $users;
+}
+
+/**
+ * Normalize Turkish & special characters to ASCII for smart matching
+ */
+function wg_quick_slug($str) {
+    $str = str_replace(
+        ['ı', 'ğ', 'ü', 'ş', 'ö', 'ç', 'İ', 'Ğ', 'Ü', 'Ş', 'Ö', 'Ç'],
+        ['i', 'g', 'u', 's', 'o', 'c', 'i', 'g', 'u', 's', 'o', 'c'],
+        (string)$str
+    );
+    return strtolower(trim(preg_replace('/[^a-zA-Z0-9]/', '', $str)));
+}
+
+/**
+ * Synchronize online WireGuard peers into Posea AD SSO active sessions and PoseaFilter UTM
+ */
+function wg_quick_sync_ad_sessions() {
+    if (!wg_quick_is_ad_sso_available()) {
+        return ['success' => false, 'error' => 'Posea AD SSO modülü bulunamadı.'];
+    }
+
+    require_once('/usr/local/pkg/posea_ad_sso.inc');
+
+    $status = wg_quick_get_status();
+    $meta_all = wg_quick_get_peers_meta();
+    $ad_users = wg_quick_get_ad_users();
+    $ad_by_username = [];
+    foreach ($ad_users as $u) {
+        $ad_by_username[strtolower($u['username'])] = $u;
+    }
+
+    $sessions = posea_sso_get_sessions();
+    $now = time();
+    $synced_count = 0;
+
+    foreach ($status['all_peers'] as $peer) {
+        $pubkey = $peer['publickey'];
+        $peer_ip = $peer['first_ip'];
+        if (empty($peer_ip)) continue;
+
+        $ad_user = null;
+        $meta = $meta_all[$pubkey] ?? [];
+        if (!empty($meta['ad_username'])) {
+            $u_key = strtolower($meta['ad_username']);
+            $ad_user = $ad_by_username[$u_key] ?? [
+                'username' => $meta['ad_username'],
+                'display_name' => $meta['ad_username'],
+                'groups' => ['Domain Users', 'WireGuard-VPN'],
+                'department' => 'VPN'
+            ];
+        } else {
+            // Auto-match by description or name
+            $clean_descr = wg_quick_slug($peer['descr']);
+            foreach ($ad_by_username as $un => $u_info) {
+                if ($un === $clean_descr || wg_quick_slug($u_info['display_name']) === $clean_descr) {
+                    $ad_user = $u_info;
+                    wg_quick_save_peer_meta($pubkey, ['ad_username' => $u_info['username']]);
+                    break;
+                }
+            }
+        }
+
+        if (!$ad_user) continue;
+
+        $latest_hs = intval($peer['latest_handshake'] ?? 0);
+        $is_online = ($latest_hs > 0 && ($now - $latest_hs < 900));
+
+        if ($is_online) {
+            $sessions[$peer_ip] = [
+                'ip' => $peer_ip,
+                'mac' => 'wireguard',
+                'hostname' => 'WG-' . strtoupper($ad_user['username']),
+                'username' => $ad_user['username'],
+                'display_name' => $ad_user['display_name'] ?? $ad_user['username'],
+                'groups' => !empty($ad_user['groups']) ? $ad_user['groups'] : ['Domain Users', 'WireGuard-VPN'],
+                'department' => $ad_user['department'] ?? 'VPN',
+                'mail' => $ad_user['mail'] ?? '',
+                'mode' => 'wireguard_vpn',
+                'is_admin' => (in_array('Administrators', $ad_user['groups'] ?? []) || in_array('Domain Admins', $ad_user['groups'] ?? [])),
+                'last_seen' => date('Y-m-d H:i:s', $latest_hs),
+                'status' => 'authenticated'
+            ];
+            $synced_count++;
+        }
+    }
+
+    posea_sso_save_sessions($sessions);
+
+    return [
+        'success' => true,
+        'synced_count' => $synced_count,
+        'total_sessions' => count($sessions)
+    ];
 }
 
 /**
@@ -185,6 +427,13 @@ function wg_quick_get_status() {
     $raw_peers = config_get_path('installedpackages/wireguard/peers/item') ?? [];
     $wg_config = config_get_path('installedpackages/wireguard/config/0') ?? [];
     $vault = wg_quick_get_key_vault();
+    $peers_meta = wg_quick_get_peers_meta();
+    $ad_status = wg_quick_get_ad_sso_status();
+    $ad_users = $ad_status['available'] ? wg_quick_get_ad_users() : [];
+    $ad_by_username = [];
+    foreach ($ad_users as $u) {
+        $ad_by_username[strtolower($u['username'])] = $u;
+    }
 
     $service_enabled = (($wg_config['enable'] ?? 'off') === 'on');
 
@@ -240,10 +489,31 @@ function wg_quick_get_status() {
                 $allowed_ips_str = !empty($aips) ? implode(", ", $aips) : ($running_peer['allowed_ips'] ?? '');
                 $first_ip = !empty($aips[0]) ? explode('/', $aips[0])[0] : '';
 
+                $meta = $peers_meta[$pub_key] ?? [];
+                $ad_username = $meta['ad_username'] ?? ($p['ad_username'] ?? '');
+
+                if (empty($ad_username) && !empty($ad_users)) {
+                    $clean_descr = wg_quick_slug($p['descr'] ?? '');
+                    foreach ($ad_users as $au) {
+                        if (wg_quick_slug($au['username']) === $clean_descr || wg_quick_slug($au['display_name']) === $clean_descr) {
+                            $ad_username = $au['username'];
+                            wg_quick_save_peer_meta($pub_key, ['ad_username' => $ad_username]);
+                            break;
+                        }
+                    }
+                }
+
+                $ad_info = null;
+                if (!empty($ad_username)) {
+                    $ad_info = $ad_by_username[strtolower($ad_username)] ?? null;
+                }
+
                 $peer_item = [
                     'idx' => $p_idx,
                     'tun' => $tun_name,
                     'descr' => $p['descr'] ?? '',
+                    'ad_username' => $ad_username,
+                    'ad_info' => $ad_info,
                     'enabled' => ($p['enabled'] ?? 'no') === 'yes',
                     'publickey' => $pub_key,
                     'privatekey' => $vault[$pub_key] ?? '',
@@ -271,7 +541,8 @@ function wg_quick_get_status() {
         'tunnels' => $tunnels,
         'all_peers' => $all_peers,
         'wan_endpoint' => wg_quick_get_wan_endpoint(),
-        'network_defaults' => wg_quick_get_network_defaults()
+        'network_defaults' => wg_quick_get_network_defaults(),
+        'ad_sso' => $ad_status
     ];
 }
 
@@ -360,6 +631,7 @@ function wg_quick_add_peer($data) {
     $dns = trim($data['dns'] ?? $net_defaults['default_dns']);
     $allowed_ips_client = trim($data['allowed_ips_client'] ?? $net_defaults['allowed_ips_default']);
     $endpoint_override = trim($data['endpoint_override'] ?? '');
+    $ad_username = trim($data['ad_username'] ?? '');
 
     // Validation
     if (empty($tun)) {
@@ -449,6 +721,10 @@ function wg_quick_add_peer($data) {
     ];
 
     config_set_path("installedpackages/wireguard/peers/item/{$peer_idx}", $peer_record);
+    if (!empty($ad_username)) {
+        wg_quick_save_peer_meta($publickey, ['ad_username' => $ad_username]);
+    }
+
     if (function_exists('wg_write_config')) {
         wg_write_config("Added peer {$descr} ({$publickey}) to {$tun}", true);
     } else {
@@ -460,6 +736,11 @@ function wg_quick_add_peer($data) {
     }
     if (function_exists('wg_tunnel_sync')) {
         wg_tunnel_sync($tun, true, true);
+    }
+
+    // Sync to Posea AD SSO active sessions and PoseaFilter
+    if (wg_quick_is_ad_sso_available()) {
+        wg_quick_sync_ad_sessions();
     }
 
     $conf_text = wg_quick_generate_config(
@@ -477,6 +758,7 @@ function wg_quick_add_peer($data) {
         'peer' => $peer_record,
         'config' => $conf_text,
         'descr' => $descr,
+        'ad_username' => $ad_username,
         'client_ip' => $clean_ip,
         'client_privkey' => $client_privkey,
         'publickey' => $publickey,

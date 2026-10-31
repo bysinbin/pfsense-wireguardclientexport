@@ -12,7 +12,12 @@ pfSense üzerinde karmaşık WireGuard menüleri arasında dolaşmadan, **tek bi
    - **Public Key (Açık Anahtar):** Kullanıcı doğrudan istemcisinde ürettiği Public Key'i yapıştırabilir.
    - **🔑 Otomatik Anahtar Çifti Üret (1-Tık):** Eğer istemcide henüz anahtar üretilmediyse, tek tıkla Private Key + Public Key üretilir. Public Key alana yerleşir, üretilen Private Key ise indirilecek config dosyasına ve QR koda otomatik eklenir!
 
-2. **Hazır İstemci Konfigürasyonu (`.conf`) & İndirme:**
+2. **🏢 Posea AD SSO & 5651 Kanun Uyumluluğu Entegrasyonu:**
+   - **Active Directory Kullanıcı Seçimi:** Peer eklerken Active Directory'deki (LDAP) personeller listeden seçilebilir; adı, sıradaki IP'si ve anahtarları tek tıkla otomatik oluşturulur.
+   - **PoseaFilter UTM & 5651 Entegrasyonu:** WireGuard üzerinden şirkete bağlanan personelin VPN oturumu anında Posea AD SSO (`active_sessions.json`) ve PoseaFilter (`ad_users.json`) tablolarına işlenir. Dışarıdan bağlanan personelin web trafiği de personelin kendi AD kullanıcı kimliği ve güvenlik grubuyla denetlenir ve 5651 loglarına kaydedilir.
+   - **AD Durumu & Otomatik Yetki İptali (Kill-Switch):** Şirketten ayrılan bir personelin Domain hesabı kapatıldığında (`Disabled`), sistem bunu anında algılar; tabloda `[AD Pasif]` rozeti ile uyarır ve tek tıkla WireGuard erişimini kesme imkanı sunar.
+
+3. **Hazır İstemci Konfigürasyonu (`.conf`) & İndirme:**
    - pfSense sunucusunun WAN dış IP'sini, dinleme portunu ve sunucu Public Key'ini otomatik alarak istemci için tam hazır konfigürasyon üretir.
    - **📋 Panoya Kopyala** ve **💾 .conf İndir** butonları.
 
