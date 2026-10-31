@@ -113,9 +113,22 @@ function wg_quick_get_network_defaults() {
 
     $allowed_ips_default = !empty($lan_cidr) ? "10.0.0.0/24, {$lan_cidr}" : "0.0.0.0/0, ::/0";
 
-    // Detect internal DNS server (from system DNS or LAN gateway)
-    $sys_dns_arr = config_get_path('system/dnsserver') ?? [];
-    $default_dns = !empty($sys_dns_arr[0]) ? $sys_dns_arr[0] : ($lan_ip ?: '1.1.1.1');
+    // Detect internal DNS server (from unbound domain overrides matching system domain, or system DNS)
+    $sys_domain = config_get_path('system/domain');
+    $unbound_overrides = config_get_path('unbound/domainoverrides') ?? [];
+    $default_dns = '';
+
+    foreach ($unbound_overrides as $ov) {
+        if (!empty($sys_domain) && ($ov['domain'] ?? '') === $sys_domain && !empty($ov['ip'])) {
+            $default_dns = $ov['ip'];
+            break;
+        }
+    }
+
+    if (empty($default_dns)) {
+        $sys_dns_arr = config_get_path('system/dnsserver') ?? [];
+        $default_dns = !empty($sys_dns_arr[0]) ? $sys_dns_arr[0] : ($lan_ip ?: '1.1.1.1');
+    }
 
     return [
         'lan_cidr' => $lan_cidr,
