@@ -410,7 +410,10 @@ function format_handshake_human($timestamp) {
         <h2 class="panel-title" style="font-size:17px; margin:0; font-weight:bold;">
             <i class="fa fa-shield text-primary"></i> WireGuard Hızlı Peer Yönetimi &amp; İstemci İhracı
         </h2>
-        <div>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <a href="https://github.com/bysinbin/poseaVpn/releases" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary" style="font-weight:bold;">
+                <i class="fa fa-windows"></i> PoseaVPN İndir (Releases)
+            </a>
             <?php if ($has_tunnels): ?>
                 <button type="button" class="btn btn-sm btn-info" data-toggle="modal" data-target="#newTunnelModal">
                     <i class="fa fa-plus-circle"></i> Ek Tünel Oluştur
@@ -421,7 +424,8 @@ function format_handshake_human($timestamp) {
     <div class="panel-body">
         <p class="text-muted" style="margin-bottom: 20px;">
             Atanacak IP, Peer Adı ve Private Key girerek (veya 1-tıkla üreterek) saniyeler içinde WireGuard ağına yeni bir istemci ekleyebilir; 
-            hazır <strong>.conf</strong> dosyasını indirebilir veya mobil cihazlar için <strong>QR kod</strong> alabilirsiniz.
+            hazır <strong>.conf</strong> dosyasını indirebilir veya mobil cihazlar için <strong>QR kod</strong> alabilirsiniz. 
+            Masaüstü için güncel sürümleri <a href="https://github.com/bysinbin/poseaVpn/releases" target="_blank" rel="noopener noreferrer" style="font-weight:bold; color:#38bdf8;"><i class="fa fa-external-link"></i> PoseaVPN Releases</a> sayfasından indirebilirsiniz.
         </p>
 
         <?php if (!empty($savemsg)): ?>
@@ -912,13 +916,28 @@ function format_handshake_human($timestamp) {
                         <p class="text-muted" style="font-size:12px; line-height:1.4; padding:0 10px;">
                             <i class="fa fa-camera text-primary"></i> <strong>WireGuard</strong> mobil uygulamasını açın, <strong>+</strong> butonuna basıp <strong>QR Kodu Tara</strong> seçeneği ile kameranızı okutun.
                         </p>
+                        <div style="margin-top: 15px; padding: 10px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 6px;">
+                            <label style="font-size: 11px; font-weight: bold; color: #38bdf8; margin-bottom: 5px; display: block;">
+                                <i class="fa fa-windows"></i> Masaüstü PoseaVPN İstemcisi:
+                            </label>
+                            <a href="https://github.com/bysinbin/poseaVpn/releases" target="_blank" rel="noopener noreferrer" class="btn btn-xs btn-info btn-block" style="font-weight: bold; background: #0284c7; border-color: #0369a1;">
+                                <i class="fa fa-download"></i> PoseaVPN İndir (GitHub Releases)
+                            </a>
+                        </div>
                     </div>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-success" onclick="downloadModalConfig()"><i class="fa fa-download"></i> .conf Dosyasını İndir</button>
-                <button type="button" class="btn btn-primary" onclick="copyModalConfig()"><i class="fa fa-copy"></i> Panoya Kopyala</button>
-                <button type="button" class="btn btn-default" data-dismiss="modal">Kapat</button>
+            <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <div>
+                    <a href="https://github.com/bysinbin/poseaVpn/releases" target="_blank" rel="noopener noreferrer" class="btn btn-primary font-weight-bold">
+                        <i class="fa fa-windows"></i> PoseaVPN İndir (Releases)
+                    </a>
+                </div>
+                <div>
+                    <button type="button" class="btn btn-success" onclick="downloadModalConfig()"><i class="fa fa-download"></i> .conf Dosyasını İndir</button>
+                    <button type="button" class="btn btn-default" onclick="copyModalConfig()"><i class="fa fa-copy"></i> Panoya Kopyala</button>
+                    <button type="button" class="btn btn-default" data-dismiss="modal">Kapat</button>
+                </div>
             </div>
         </div>
     </div>
