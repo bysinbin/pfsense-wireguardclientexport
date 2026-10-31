@@ -60,11 +60,11 @@ if (isset($_GET['ajax_derive_pub'])) {
 }
 
 // 5. AJAX Save Private Key for a peer
-if (isset($_POST['ajax_save_privkey'])) {
+if (isset($_REQUEST['ajax_save_privkey'])) {
     session_write_close();
     header('Content-Type: application/json; charset=utf-8');
-    $pub = trim($_POST['pubkey'] ?? '');
-    $priv = trim($_POST['privkey'] ?? '');
+    $pub = trim($_REQUEST['pubkey'] ?? '');
+    $priv = trim($_REQUEST['privkey'] ?? '');
     if (!empty($pub) && !empty($priv)) {
         wg_quick_save_private_key($pub, $priv);
         echo json_encode(['success' => true]);
@@ -75,11 +75,11 @@ if (isset($_POST['ajax_save_privkey'])) {
 }
 
 // 5b. AJAX Save AD User Mapping for a peer
-if (isset($_POST['ajax_save_peer_ad'])) {
+if (isset($_REQUEST['ajax_save_peer_ad'])) {
     session_write_close();
     header('Content-Type: application/json; charset=utf-8');
-    $pub = trim($_POST['pubkey'] ?? '');
-    $ad_user = trim($_POST['ad_username'] ?? '');
+    $pub = trim($_REQUEST['pubkey'] ?? '');
+    $ad_user = trim($_REQUEST['ad_username'] ?? '');
     if (!empty($pub)) {
         wg_quick_save_peer_meta($pub, ['ad_username' => $ad_user]);
         if (wg_quick_is_ad_sso_available()) {
@@ -1096,6 +1096,17 @@ function openConfigModal(title, configText, name, pubkey, privkey, tun, ip, adUs
     $('#configExportModal').modal('show');
 }
 
+function getCsrfToken() {
+    if (typeof csrfMagicToken !== 'undefined' && csrfMagicToken) {
+        return csrfMagicToken;
+    }
+    var csrfInput = document.querySelector('input[name="__csrf_magic"]');
+    if (csrfInput && csrfInput.value) {
+        return csrfInput.value;
+    }
+    return '';
+}
+
 function saveModalPrivateKey() {
     var newPriv = document.getElementById("modalPrivKeyInput").value.trim();
     if (!newPriv) {
@@ -1103,23 +1114,29 @@ function saveModalPrivateKey() {
         return;
     }
 
-    var formData = new FormData();
-    formData.append("ajax_save_privkey", "1");
-    formData.append("pubkey", currentModalPubkey);
-    formData.append("privkey", newPriv);
+    var params = new URLSearchParams();
+    params.append("ajax_save_privkey", "1");
+    params.append("pubkey", currentModalPubkey);
+    params.append("privkey", newPriv);
 
-    fetch("wg_quick_peer.php", {
-        method: "POST",
-        body: formData
-    })
+    var csrfToken = getCsrfToken();
+    if (csrfToken) {
+        params.append("__csrf_magic", csrfToken);
+    }
+
+    fetch("wg_quick_peer.php?" + params.toString())
     .then(function(res) { return res.json(); })
     .then(function(data) {
-        if (data.success) {
+        if (data && data.success) {
             // Re-fetch config with new private key
             showExistingPeerModal(currentModalTun, currentModalIp, currentExportName, currentModalPubkey, newPriv);
         } else {
-            alert("Anahtar kaydedilemedi: " + (data.error || "Bilinmeyen hata"));
+            alert("Anahtar kaydedilemedi: " + ((data && data.error) ? data.error : "Bilinmeyen hata"));
         }
+    })
+    .catch(function(err) {
+        console.error(err);
+        alert("Sunucu ile iletişim hatası.");
     });
 }
 
@@ -1128,12 +1145,17 @@ function saveModalAdUser() {
     if (!adSel || !currentModalPubkey) return;
 
     var newAdUser = adSel.value;
-    var formData = new FormData();
-    formData.append('ajax_save_peer_ad', '1');
-    formData.append('pubkey', currentModalPubkey);
-    formData.append('ad_username', newAdUser);
+    var params = new URLSearchParams();
+    params.append('ajax_save_peer_ad', '1');
+    params.append('pubkey', currentModalPubkey);
+    params.append('ad_username', newAdUser);
 
-    fetch('wg_quick_peer.php', { method: 'POST', body: formData })
+    var csrfToken = getCsrfToken();
+    if (csrfToken) {
+        params.append('__csrf_magic', csrfToken);
+    }
+
+    fetch('wg_quick_peer.php?' + params.toString())
         .then(function(res) { return res.json(); })
         .then(function(data) {
             if (data && data.success) {
@@ -1143,7 +1165,8 @@ function saveModalAdUser() {
                 alert("Hata: " + ((data && data.error) ? data.error : "Eşleme kaydedilemedi."));
             }
         })
-        .catch(function() {
+        .catch(function(err) {
+            console.error(err);
             alert("Sunucu ile iletişim hatası.");
         });
 }
@@ -1184,7 +1207,7 @@ function syncAdSessions(btn) {
         btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Senkronize ediliyor...';
     }
 
-    fetch('wg_quick_peer.php?ajax_sync_ad_sessions=1', { method: 'POST' })
+    fetch('wg_quick_peer.php?ajax_sync_ad_sessions=1')
         .then(function(res) { return res.json(); })
         .then(function(data) {
             if (btn) {
@@ -1197,11 +1220,12 @@ function syncAdSessions(btn) {
                 alert('Hata: ' + ((data && data.error) ? data.error : 'Senkronizasyon başarısız oldu.'));
             }
         })
-        .catch(function() {
+        .catch(function(err) {
             if (btn) {
                 btn.disabled = false;
                 btn.innerHTML = origHtml;
             }
+            console.error(err);
             alert('Sunucu ile iletişim kurulurken hata oluştu.');
         });
 }
